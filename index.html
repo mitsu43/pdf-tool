@@ -803,7 +803,11 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
           バッチ数分の分割PDFと指示文を一気に用意します。準備後、各バッチをGeminiの別タブで並行処理し、戻ってきたJSONを各欄に貼ると自動取込されます。
         </div>
         <button class="btn btn-primary btn-sm" id="bulkPrepBtn">📦 全バッチを一括準備</button>
+        <button class="btn btn-secondary btn-sm" id="bulkDownloadBtn" disabled title="全バッチの分割PDFをまとめてダウンロード">📎 全件PDFダウンロード</button>
       </div>
+
+      <!-- Quick parallel control panel (shown after prep) -->
+      <div id="quickPanel"></div>
 
       <!-- Parallel batch grid -->
       <div id="batchGrid"></div>
@@ -874,6 +878,34 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
   -webkit-user-select: text; user-select: text;
   -webkit-appearance: none; margin: 4px 0 6px;
 }
+/* ===== Quick parallel panel ===== */
+.quick-panel {
+  background: #f0f7ff; border: 1px solid #b8d4f0; border-left: 5px solid #1a6fb3;
+  padding: 12px 14px; margin-bottom: 16px; border-radius: 0;
+}
+.quick-panel-head {
+  font-family: 'Noto Sans JP', sans-serif; font-size: 13px; font-weight: 700;
+  color: var(--ink); margin-bottom: 6px;
+}
+.quick-panel-guide {
+  font-family: 'Noto Sans JP', sans-serif; font-size: 11px; color: #2a5080;
+  line-height: 1.7; margin-bottom: 12px;
+}
+.quick-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; border-top: 1px solid #cde0f5; font-family: 'Noto Sans JP', sans-serif;
+}
+.quick-row:first-child { border-top: none; }
+.quick-label { font-size: 12px; font-weight: 700; color: var(--ink); flex-shrink: 0; min-width: 52px; }
+.quick-pages { font-size: 11px; color: var(--gray); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quick-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.quick-stat {
+  flex-shrink: 0; font-size: 12px; font-weight: 700; width: 22px; text-align: center;
+}
+.quick-stat.pending { color: #aaa; }
+.quick-stat.done    { color: #2e7d32; }
+.quick-stat.error   { color: #c62828; }
+.quick-stat.editing { color: #d4a017; }
 </style>
 
 <!-- ============ Progress ============ -->
@@ -2845,6 +2877,7 @@ function renderBatchGrid() {
   });
 
   updateOverallStatus();
+  renderQuickPanel();
 }
 
 function updateOverallStatus() {
@@ -2856,6 +2889,87 @@ function updateOverallStatus() {
   let status = `${done}/${total} 完了`;
   if (err > 0) status += ` (${err}件エラー)`;
   $('manualStatus').textContent = status;
+}
+
+// 全バッチの分割PDFを連続ダウンロード
+async function downloadAllBatchPdfs() {
+  const m = state.manual;
+  if (!m?.prepared) { alert('先に「全バッチを一括準備」をしてください'); return; }
+  const btn = $('bulkDownloadBtn');
+  const total = m.batches.length;
+  let ok = 0;
+  if (btn) { btn.disabled = true; }
+  log(`📎 全${total}件の分割PDFダウンロードを開始...`, 'info');
+  for (let i = 0; i < m.batches.length; i++) {
+    if (btn) btn.textContent = `📎 ${i + 1}/${total}件目を生成中...`;
+    try {
+      await downloadBatchPdf(m.batches[i].id);
+      ok++;
+      if (i < m.batches.length - 1) await new Promise(r => setTimeout(r, 700));
+    } catch (e) {
+      log(`バッチ${i + 1} ダウンロードエラー: ${e.message}`, 'err');
+    }
+  }
+  if (btn) { btn.disabled = false; btn.textContent = `✓ 全${ok}件ダウンロード完了`; }
+  log(`✓ ${ok}/${total}件の分割PDFをダウンロード（ファイルApp「ダウンロード」フォルダ）`, 'ok');
+}
+
+// 並行処理クイックパネルを描画
+function renderQuickPanel() {
+  const m = state.manual;
+  const panel = $('quickPanel');
+  if (!panel) return;
+  if (!m?.prepared) { panel.innerHTML = ''; return; }
+
+  // 全件ダウンロードボタンを有効化
+  const bulkDlBtn = $('bulkDownloadBtn');
+  if (bulkDlBtn && bulkDlBtn.textContent.startsWith('📎 全件')) bulkDlBtn.disabled = false;
+
+  panel.innerHTML = `
+    <div class="quick-panel">
+      <div class="quick-panel-head">⚡ 並行処理クイックパネル</div>
+      <div class="quick-panel-guide">
+        ① 「📎 全件PDFダウンロード」→ ② 各バッチの 🌐📋 をタップしてGeminiタブを開き＋プロンプトをコピー
+        → ③ 各Geminiタブ：PDF添付・貼り付け・送信（複数タブを並行） → ④ 結果が返ったら下のSTEP3欄に貼り付け
+      </div>
+      <div class="quick-rows">
+        ${m.batches.map(b => {
+          const statCls = b.status;
+          const statLabel = b.status === 'done' ? '✓' : b.status === 'error' ? '✕' : b.status === 'editing' ? '…' : '○';
+          return `
+            <div class="quick-row">
+              <span class="quick-label">バッチ${b.id + 1}</span>
+              <span class="quick-pages">P${b.startPage}〜${b.endPage}</span>
+              <div class="quick-actions">
+                <button class="btn btn-secondary btn-xs quick-qdl-btn" data-batch-id="${b.id}" title="このバッチのみDL">📎</button>
+                <button class="btn btn-primary btn-xs quick-qgemini-btn" title="Geminiを新タブで開く">🌐</button>
+                <button class="btn btn-secondary btn-xs quick-qcopy-btn" data-batch-id="${b.id}" title="プロンプトをコピー">📋</button>
+              </div>
+              <span class="quick-stat ${statCls}">${statLabel}</span>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  panel.querySelectorAll('.quick-qdl-btn').forEach(btn =>
+    btn.addEventListener('click', () => downloadBatchPdf(parseInt(btn.dataset.batchId))));
+  panel.querySelectorAll('.quick-qgemini-btn').forEach(btn =>
+    btn.addEventListener('click', () => window.open('https://gemini.google.com/', '_blank')));
+  panel.querySelectorAll('.quick-qcopy-btn').forEach(btn =>
+    btn.addEventListener('click', async () => {
+      const batchId = parseInt(btn.dataset.batchId);
+      const b = m.batches[batchId];
+      const editionCode = detectEdition(state.pdfFile?.name || '');
+      const startNo = (batchId * m.batchSize * 5) + 1;
+      let text = '';
+      try { text = makeManualPrompt('extract', { startPage: b.startPage, endPage: b.endPage, startNo, editionCode }); } catch { }
+      if (!text) return;
+      try { await navigator.clipboard.writeText(text); } catch { }
+      const orig = btn.textContent;
+      btn.textContent = '✓'; btn.disabled = true;
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+      log(`📋 バッチ${batchId + 1}: プロンプトをコピー`, 'ok');
+    }));
 }
 
 // Debounce helper
@@ -2877,7 +2991,7 @@ $('bulkPrepBtn').addEventListener('click', async () => {
     // Just mark as prepared — PDF splits and prompt generation happen on-demand per tile
     m.prepared = true;
     renderBatchGrid();
-    log(`📦 全 ${m.batches.length} バッチの準備完了。各タイルの「📎 PDFダウンロード」「📋 指示文コピー」を使って並列処理してください`, 'ok');
+    log(`📦 全 ${m.batches.length} バッチの準備完了。クイックパネルの 🌐📋 で並行処理してください`, 'ok');
   } catch (err) {
     log(`一括準備エラー: ${err.message}`, 'err');
     alert('準備に失敗: ' + err.message);
@@ -2885,6 +2999,8 @@ $('bulkPrepBtn').addEventListener('click', async () => {
     $('bulkPrepBtn').textContent = '📦 全バッチを一括準備';
   }
 });
+
+$('bulkDownloadBtn').addEventListener('click', downloadAllBatchPdfs);
 
 async function downloadBatchPdf(batchId) {
   const m = state.manual;
