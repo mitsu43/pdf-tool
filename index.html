@@ -858,6 +858,22 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
   font-size: 11px; color: #2e7d32; margin-top: 6px; font-family: 'Noto Sans JP', sans-serif;
 }
 .batch-tile.error .batch-tile-summary { color: #c62828; }
+.batch-step { margin: 12px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line-soft); }
+.batch-step-label {
+  font-family: 'Noto Sans JP', sans-serif; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.12em; color: var(--ink); margin-bottom: 8px; text-transform: uppercase;
+}
+.batch-step-note {
+  font-family: 'Noto Sans JP', sans-serif; font-size: 12px; color: var(--gray);
+  margin: 6px 0 8px; line-height: 1.7;
+}
+.batch-prompt-display {
+  width: 100%; height: 110px; font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; line-height: 1.5; border: 1px solid var(--line);
+  background: #f9f7f2; color: var(--ink-soft); padding: 8px; resize: vertical;
+  -webkit-user-select: text; user-select: text;
+  -webkit-appearance: none; margin: 4px 0 6px;
+}
 </style>
 
 <!-- ============ Progress ============ -->
@@ -2734,57 +2750,96 @@ function renderBatchGrid() {
   // Build tiles HTML
   grid.innerHTML = m.batches.map(b => {
     const statusIcon = b.status === 'done' ? '✓' : b.status === 'error' ? '✕' : b.status === 'editing' ? '…' : '○';
-    const placeholder = prepared
-      ? `Gemini の応答JSONをここに貼り付けると自動で取り込まれます（順番不問）`
-      : `先に「📦 全バッチを一括準備」をタップしてください`;
-    const pdfBtnDisabled = !prepared ? 'disabled' : '';
-    const promptBtnDisabled = !prepared ? 'disabled' : '';
+
+    // プロンプトを同期生成（準備済みバッチのみ）
+    let promptText = '';
+    if (prepared) {
+      try {
+        const startNo = (b.id * m.batchSize * 5) + 1;
+        promptText = makeManualPrompt('extract', {
+          startPage: b.startPage, endPage: b.endPage,
+          startNo, editionCode,
+        });
+      } catch (e) { promptText = '（プロンプト生成エラー: ' + e.message + '）'; }
+    }
+
     return `
       <div class="batch-tile ${b.status}" data-batch-id="${b.id}">
         <div class="batch-tile-head">
           <span class="batch-tile-status">${statusIcon}</span>
           <span class="batch-tile-title">
             バッチ ${b.id + 1} / ${m.batches.length}
-            <span class="batch-tile-meta">P${b.startPage}〜P${b.endPage} (${b.endPage - b.startPage + 1}ページ)</span>
+            <span class="batch-tile-meta">P${b.startPage}〜P${b.endPage}（${b.endPage - b.startPage + 1}ページ）</span>
           </span>
+          ${b.status === 'done' || b.status === 'error' ? `<button class="btn btn-secondary btn-xs batch-clear-btn" data-batch-id="${b.id}">✕ クリア</button>` : ''}
         </div>
-        <div class="batch-tile-actions">
-          <button class="btn btn-primary btn-sm batch-share-btn" data-batch-id="${b.id}" ${pdfBtnDisabled}>📤 Geminiへ共有</button>
-          <button class="btn btn-secondary btn-sm batch-pdf-btn" data-batch-id="${b.id}" ${pdfBtnDisabled}>📎 ダウンロード</button>
-          <button class="btn btn-secondary btn-sm batch-prompt-btn" data-batch-id="${b.id}" ${promptBtnDisabled}>📋 指示文コピー</button>
-          ${b.status === 'done' || b.status === 'error' ? `<button class="btn btn-secondary btn-sm batch-clear-btn" data-batch-id="${b.id}">✕ クリア</button>` : ''}
+
+        ${prepared ? `
+        <div class="batch-step">
+          <div class="batch-step-label">STEP 1 ― 分割PDFをダウンロード</div>
+          <button class="btn btn-secondary btn-sm batch-pdf-btn" data-batch-id="${b.id}">📎 ダウンロード</button>
+          <div class="batch-step-note">ファイルApp「ダウンロード」フォルダに保存されます</div>
         </div>
-        <textarea
-          class="batch-paste"
-          data-batch-id="${b.id}"
-          placeholder="${placeholder}"
-          ${!prepared ? 'disabled' : ''}
-        ></textarea>
-        ${b.summary ? `<div class="batch-tile-summary">${escapeHtml(b.summary)}</div>` : ''}
+
+        <div class="batch-step">
+          <div class="batch-step-label">STEP 2 ― Geminiで処理</div>
+          <button class="btn btn-primary btn-sm batch-gemini-btn" data-batch-id="${b.id}">🌐 Geminiを新しいタブで開く</button>
+          <div class="batch-step-note">
+            ① 開いたGeminiで「＋」をタップ → STEP1のPDFを添付<br>
+            ② 下のプロンプトをコピー → Geminiに貼り付けて送信<br>
+            ③ このタブに戻ってSTEP3にJSONを貼り付け
+          </div>
+          <textarea class="batch-prompt-display" readonly data-batch-id="${b.id}">${escapeHtml(promptText)}</textarea>
+          <button class="btn btn-secondary btn-sm batch-copy-prompt-btn" data-batch-id="${b.id}">📋 プロンプトをコピー</button>
+        </div>
+
+        <div class="batch-step">
+          <div class="batch-step-label">STEP 3 ― GeminiのJSONを貼り付け</div>
+          <textarea class="batch-paste" data-batch-id="${b.id}" placeholder="GeminiのJSONをここに貼り付け（自動取込）"></textarea>
+          ${b.summary ? `<div class="batch-tile-summary">${escapeHtml(b.summary)}</div>` : ''}
+        </div>
+        ` : `
+        <div class="batch-step-note" style="padding:8px 0;color:var(--gray);">先に「📦 全バッチを一括準備」をタップしてください</div>
+        `}
       </div>
     `;
   }).join('');
 
   // Bind events
-  grid.querySelectorAll('.batch-share-btn').forEach(btn => {
-    btn.addEventListener('click', () => shareBatchPdf(parseInt(btn.dataset.batchId)));
-  });
   grid.querySelectorAll('.batch-pdf-btn').forEach(btn => {
     btn.addEventListener('click', () => downloadBatchPdf(parseInt(btn.dataset.batchId)));
   });
-  grid.querySelectorAll('.batch-prompt-btn').forEach(btn => {
-    btn.addEventListener('click', () => copyBatchPrompt(parseInt(btn.dataset.batchId)));
+  grid.querySelectorAll('.batch-gemini-btn').forEach(btn => {
+    btn.addEventListener('click', () => window.open('https://gemini.google.com/', '_blank'));
+  });
+  grid.querySelectorAll('.batch-copy-prompt-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const batchId = parseInt(btn.dataset.batchId);
+      const ta = document.querySelector(`.batch-prompt-display[data-batch-id="${batchId}"]`);
+      const text = ta ? ta.value : '';
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        const orig = btn.textContent;
+        btn.textContent = '✓ コピー済み'; btn.disabled = true;
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+        log(`📋 バッチ${batchId+1}: プロンプトをコピーしました`, 'ok');
+      } catch {
+        // フォールバック: テキストエリアを全選択（手動コピー用）
+        if (ta) { ta.select(); ta.setSelectionRange(0, 99999); }
+        log('クリップボード自動コピー不可。テキストエリアを全選択しました（長押し→コピー）', 'warn');
+      }
+    });
   });
   grid.querySelectorAll('.batch-clear-btn').forEach(btn => {
     btn.addEventListener('click', () => clearBatch(parseInt(btn.dataset.batchId)));
   });
-  // Auto-import on paste/input — when user pastes JSON, import immediately
+  // JSONを貼り付けたら自動取込
   grid.querySelectorAll('.batch-paste').forEach(ta => {
     ta.addEventListener('input', debounce(() => {
       const id = parseInt(ta.dataset.batchId);
       const text = ta.value.trim();
       if (text.length < 10) return;
-      // Try to import; if invalid, mark error but keep text
       importBatchJson(id, text);
     }, 400));
   });
@@ -2880,35 +2935,6 @@ async function shareBytes(bytes, filename, mime, opts = {}) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
   return 'downloaded';
-}
-
-async function shareBatchPdf(batchId) {
-  const m = state.manual;
-  const b = m?.batches[batchId];
-  if (!b) return;
-  if (!state.pdfFile || typeof state.pdfFile.arrayBuffer !== 'function') {
-    alert('元PDFを再アップロードしてください（分割PDFの共有には元PDF本体が必要です）');
-    return;
-  }
-  const btn = document.querySelector(`.batch-share-btn[data-batch-id="${batchId}"]`);
-  const orig = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '生成中...'; }
-  try {
-    const bytes = await splitPdfPages(b.startPage, b.endPage);
-    const baseName = (state.pdfFile.name || 'extracted.pdf').replace(/\.pdf$/i, '');
-    const splitName = `${baseName}_P${b.startPage}-P${b.endPage}.pdf`;
-    const r = await shareBytes(bytes, splitName, 'application/pdf', {
-      title: splitName,
-      text: `${splitName} をGeminiに添付してください`,
-    });
-    if (r === 'shared') log(`📤 バッチ${batchId+1}: 共有シートを表示（Geminiアプリ等を選択）`, 'ok');
-    else if (r === 'downloaded') log(`📎 バッチ${batchId+1}: 共有非対応のためダウンロードしました（ファイルApp→Geminiで添付）`, 'warn');
-  } catch (err) {
-    log(`共有エラー (バッチ${batchId+1}): ${err.message}`, 'err');
-    alert('共有用PDF作成失敗: ' + err.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = orig; }
-  }
 }
 
 async function shareXlsxToDrive() {
